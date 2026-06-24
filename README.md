@@ -31,12 +31,17 @@ A SystemVerilog project implementing and verifying a blocking 4-way, 2KB set-ass
 # EDA Playground Run
 
 The project was tested on EDA Playground using Siemens Questa 2025.2.
+
 Recommended setup:
 
 Language: SystemVerilog/Verilog
+
 Tool: Siemens Questa 2025.2
+
 Top module: tb_cache_4way
+
 UVM/OVM: None
+
 Other libraries: None
 
 The design compiled and simulated successfully with zero compile/simulation errors. The testbench completed directed and random cache transactions, and the scoreboard reported zero mismatches.
