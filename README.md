@@ -44,7 +44,9 @@ The design compiled and simulated successfully with zero compile/simulation erro
 Expected final output:
 
 [SB] Errors = 0
+
 [SB] PASS
+
 [TB] ALL TESTS PASSED
 [SB] PASS
 [TB] ALL TESTS PASSED
