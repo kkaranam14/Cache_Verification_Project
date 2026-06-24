@@ -1,4 +1,35 @@
+// Summary:
+//   This file implements a non-UVM, class-based SystemVerilog verification
+//   environment for the cache_4way RTL. The environment drives CPU requests,
+//   observes cache responses, compares read data against a reference memory
+//   model, and reports final pass/fail status.
+//
+// Testbench Organization:
+//   1. cache_cpu_if       : Groups CPU request/response pins into an interface
+//   2. cache_txn          : Transaction object for one read or write operation
+//   3. cache_generator    : Creates directed and randomized test traffic
+//   4. cache_driver       : Converts transactions into cycle-level pin activity
+//   5. cache_monitor      : Samples accepted requests and matching responses
+//   6. cache_scoreboard   : Reference model and read-data checker
+//   7. cache_env          : Connects generator, driver, monitor, and scoreboard
+//   8. cache_mem_model    : Simple line-based backing memory model
+//   9. tb_cache_4way      : Top-level testbench
+//
+// Pass/Fail Criteria:
+//   The scoreboard compares every read response against the reference memory.
+//   The test passes only when the final scoreboard error count is zero.
+//
+// Testbench Style:
+//   - Mailboxes connect generator-to-driver and monitor-to-scoreboard.
+//   - The monitor is passive; only the driver drives DUT input signals.
+//   - The scoreboard owns the golden reference memory used for data checking.
+//------------------------------------------------------------------------------
+
+
 `timescale 1ns/1ps
+
+// Interface
+// Groups CPU-cache signals into one interface for cleaner DUT, driver, and monitor connections.
 
 interface cache_cpu_if(input logic clk);
   logic        req_valid;
@@ -13,6 +44,7 @@ interface cache_cpu_if(input logic clk);
 endinterface
 
 // CPU cache transaction
+// Represents one high-level CPU cache request used across the testbench.
 class cache_txn;
   rand bit        write;
   rand bit [31:0] addr;
@@ -20,7 +52,7 @@ class cache_txn;
   rand bit [3:0]  wstrb;
        bit [31:0] rdata;
    
-  // Word aligned address (address multiple of 4)
+  // Word-aligned address (address multiple of 4) and kept inside the initialized memory range.
   constraint c_addr  { addr < 32'h0000_1000; addr[1:0] == 2'b00; }
   constraint c_wstrb { if (write) wstrb != 4'b0000; else wstrb == 4'b0000; }
 
@@ -46,7 +78,9 @@ class cache_txn;
 endclass
 
 // Generator
-
+// The generator creates the stimulus sequence. Directed tests are used first
+// for important cache corner cases. Random traffic is then used to increase
+// the chance of catching unexpected interactions.
 class cache_generator;
   mailbox gen2drv;  //mailbox to the driver
   mailbox done_mbx; // mailbox to scoreboard
@@ -58,6 +92,7 @@ class cache_generator;
     this.num_random = num_random;
   endfunction
 
+//Builds same-set addresses with different tags for directed replacement testing.
   function bit [31:0] make_addr(int tag, int index, int word_offset);
     bit [31:0] a;
     begin
@@ -95,7 +130,9 @@ class cache_generator;
     send_txn(tr);
   endtask
   
-  // Directed testing
+  // Directed Tests
+  // These tests intentionally target specific cache behaviors before random
+  // testing starts.
   task run_directed();
     bit [31:0] a1, a2, a3, a4, a5;
 
@@ -135,6 +172,9 @@ class cache_generator;
     send_read (a1);
   endtask
 
+// Random Testing
+// Random read/write traffic improves address and byte-strobe coverage and helps 
+//expose corner-case bugs that may not appear in directed tests.
   task run_random();
     cache_txn tr;
     $display("[GEN] Random test: %0d transactions", num_random);
@@ -156,6 +196,8 @@ class cache_generator;
   endtask
 endclass
 
+// Driver
+// The driver drives DUT request-side inputs by converting each transaction into valid/ready activity.
 class cache_driver;
   virtual cache_cpu_if vif;
   mailbox gen2drv;
@@ -213,6 +255,7 @@ class cache_driver;
 endclass
 
 // Monitor
+//The monitor passively observes the DUT, matches each response to its request, and sends the completed transaction to the scoreboard.
 class cache_monitor;
   virtual cache_cpu_if vif;
   mailbox mon2sb;  // mailbox from monitor to scoreboard
@@ -254,7 +297,7 @@ class cache_monitor;
 endclass
 
 // Scoreboard code
-
+// The scoreboard checks DUT reads/writes against a byte-addressable reference memory.
 class cache_scoreboard;
   mailbox mon2sb; // from monitor to the scoreboard
   mailbox done_mbx; // From generator to scoreboard
@@ -316,7 +359,7 @@ class cache_scoreboard;
           $display("[SB] READ PASS addr=0x%08h data=0x%08h", tr.addr, tr.rdata);
         end
       end
-
+  // Tell the generator that checking for this transaction is complete.
       done_mbx.put(1);
     end
   endtask
@@ -333,7 +376,7 @@ class cache_scoreboard;
 endclass
 
 // Environment
-
+// The environment creates, connects, and runs the generator, driver, monitor, and scoreboard.
 class cache_env;
   virtual cache_cpu_if vif;
 
@@ -374,6 +417,7 @@ class cache_env;
 endclass
 
 // Backing memory model 
+// Simple full-line memory model used to provide predictable responses for cache verification.
 module cache_mem_model (
   input  logic         clk,
   input  logic         rst_n,
@@ -451,6 +495,11 @@ module cache_mem_model (
   end
 endmodule
 
+// Top level Testbench
+
+//Instantiates the DUT, memory model, verification environment, debug counters,
+// clock/reset generation, and final pass/fail check.
+
 module tb_cache_4way;
   logic clk;
   logic rst_n;
@@ -524,6 +573,8 @@ module tb_cache_4way;
     .mem_rline(mem_rline)
   );
 
+  // Lightweight coverage-style counters using DUT debug pulses.
+// These counters confirm that hits, misses, and dirty evictions were exercised.
   always @(posedge clk) begin
     if (rst_n) begin
       if (dbg_hit) hit_count++;
