@@ -123,5 +123,3 @@ The design compiled and simulated successfully. The testbench completed directed
 [TB] ALL TESTS PASSED
 ```
 
-[TB] ALL TESTS PASSED
-```
