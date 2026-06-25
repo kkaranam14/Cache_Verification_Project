@@ -116,7 +116,7 @@ class cache_generator;
     tr.write = 0;
     tr.addr  = addr;
     tr.wdata = 32'd0;
-    tr.wstrb = 4'd0; // as it is read
+    tr.wstrb = 4'd0; // Reads do not use byte write strobes.
     send_txn(tr);
   endtask
 
@@ -181,6 +181,7 @@ class cache_generator;
 
     repeat (num_random) begin
       tr = new();
+      // Stop the simulation immediately if constraints cannot create a legal transaction.
       if (!tr.randomize()) begin
         $fatal(1, "[GEN] randomize failed");
       end
@@ -191,7 +192,8 @@ class cache_generator;
   task run();
     run_directed();
     run_random();
-    gen2drv.put(null); // to stop the driver
+     // A null transaction is used as a clean end-of-test token for the driver.
+    gen2drv.put(null);
     $display("[GEN] Done");
   endtask
 endclass
@@ -208,7 +210,7 @@ class cache_driver;
     this.gen2drv = gen2drv;
     done = 0;
   endfunction
-
+ // Drive all request pins to a known idle value during reset.
   task reset_signals();
     vif.req_valid <= 0;
     vif.req_write <= 0;
@@ -218,6 +220,8 @@ class cache_driver;
   endtask
 
   task drive_one(cache_txn tr);
+    // Drive on the negative edge so signals are stable before the next
+    // positive edge where the DUT samples valid/ready.
     @(negedge vif.clk);
     vif.req_valid <= 1;
     vif.req_write <= tr.write;
@@ -226,7 +230,7 @@ class cache_driver;
     vif.wstrb     <= tr.wstrb;
 
     while (!vif.req_ready) @(posedge vif.clk);
-
+// After the handshake, return request pins to idle to avoid accidental re-use.
     @(negedge vif.clk);
     vif.req_valid <= 0;
     vif.req_write <= 0;
@@ -240,7 +244,7 @@ class cache_driver;
   task run();
     cache_txn tr;
     reset_signals();
-
+// The driver runs until the generator sends a null transaction as a stop token.
     forever begin
       gen2drv.get(tr);
       if (tr == null) begin // From generator to driver
@@ -259,7 +263,7 @@ endclass
 class cache_monitor;
   virtual cache_cpu_if vif;
   mailbox mon2sb;  // mailbox from monitor to scoreboard
-  cache_txn req_q[$];
+  cache_txn req_q[$];// FIFO keeps accepted requests until their responses arrive.
 
   function new(virtual cache_cpu_if vif, mailbox mon2sb);
     this.vif = vif;
@@ -272,7 +276,7 @@ class cache_monitor;
 
     forever begin
       @(posedge vif.clk);
-
+      // A request is accepted only when valid and ready are both high.
       if (vif.req_valid && vif.req_ready) begin
         req = new();
         req.write = vif.req_write;
@@ -282,7 +286,7 @@ class cache_monitor;
         req_q.push_back(req);
         req.print("MON-REQ");
       end
-
+      // Responses can appear later, so pair each response with the oldest request.
       if (vif.resp_valid) begin
         if (req_q.size() == 0) begin
           $fatal(1, "[MON] Response seen without request");
@@ -313,12 +317,12 @@ class cache_scoreboard;
     reads = 0;
     writes = 0;
     errors = 0;
-
+// Match the backing memory initialization so cold misses have predictable data.
     for (int i = 0; i < 65536; i++) begin
       ref_mem[i] = i[7:0];
     end
   endfunction
-
+  // Reconstructs a 32-bit little-endian word from the byte-addressable model.
   function bit [31:0] ref_read32(bit [31:0] addr);
     bit [31:0] data;
     begin
@@ -330,6 +334,7 @@ class cache_scoreboard;
     end
   endfunction
 
+  // Applies byte strobes exactly like the DUT write path should behave.
   function void ref_write32(bit [31:0] addr, bit [31:0] data, bit [3:0] strb);
     for (int b = 0; b < 4; b++) begin
       if (strb[b]) begin
@@ -341,10 +346,10 @@ class cache_scoreboard;
   task run();
     cache_txn tr;
     bit [31:0] expected;
-
+ // Scoreboard runs continuously and blocks until the monitor provides work.
     forever begin
       mon2sb.get(tr);
-
+// Writes update the reference model; reads compare DUT data against it.
       if (tr.write) begin
         ref_write32(tr.addr, tr.wdata, tr.wstrb);
         writes++;
@@ -403,12 +408,15 @@ class cache_env;
   endfunction
 
   task run();
+        // Driver, monitor, and scoreboard are background services, so they start
+// in parallel and continue while the generator controls the stimulus order.
     fork
       drv.run();
       mon.run();
       sb.run();
     join_none
-
+ // Run stimulus in the foreground, then wait for the driver to consume the
+ // null stop token before printing the final scoreboard report.
     gen.run();
     wait (drv.done == 1);
     repeat (10) @(posedge vif.clk);
@@ -437,15 +445,16 @@ module cache_mem_model (
   logic [31:0] pending_addr;
   logic [255:0] pending_wline;
   int delay_count;
-
+ // Accept a new memory request only when no previous request is pending.
   assign mem_req_ready = !pending;
 
   initial begin
+   // Deterministic contents make expected read data easy for the scoreboard.
     for (int i = 0; i < 65536; i++) begin
       mem[i] = i[7:0];
     end
   end
-
+  // Returns one aligned 32-byte cache line from the byte-addressable memory.
   function automatic logic [255:0] read_line(input logic [31:0] addr);
     logic [255:0] line;
     begin
@@ -468,7 +477,7 @@ module cache_mem_model (
       mem_rline <= 0;
     end else begin
       mem_resp_valid <= 0;
-
+      // Capture one memory request and delay the response by LATENCY cycles.
       if (!pending && mem_req_valid && mem_req_ready) begin
         pending <= 1;
         pending_write <= mem_req_write;
@@ -477,6 +486,7 @@ module cache_mem_model (
         delay_count <= LATENCY;
       end else if (pending) begin
         if (delay_count == 0) begin
+       // Writes update the stored line; reads return the requested line.
           if (pending_write) begin
             for (int b = 0; b < 32; b++) begin
               mem[pending_addr + b] <= pending_wline[b*8 +: 8];
@@ -591,19 +601,20 @@ module tb_cache_4way;
     dirty_evict_count = 0;
 
     env = new(cpu_if, 100);
-
+    // Apply reset before starting the environment so the DUT and driver pins
+    // begin from known idle values.
     rst_n = 0;
     env.drv.reset_signals();
     repeat (5) @(posedge clk);
     rst_n = 1;
     repeat (2) @(posedge clk);
-
+ // env.run blocks until stimulus is complete and the scoreboard has reported.
     env.run();
 
     $display("[COV] Hits observed          = %0d", hit_count);
     $display("[COV] Misses observed        = %0d", miss_count);
     $display("[COV] Dirty evictions seen   = %0d", dirty_evict_count);
-
+  // Final simulation result is driven only by scoreboard errors.
     if (env.sb.errors == 0) begin
       $display("[TB] ALL TESTS PASSED");
     end else begin
