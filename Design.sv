@@ -218,14 +218,14 @@ module cache_4way (
     hit_way = 2'd0;
     invalid_found = 1'b0;
     invalid_way = 2'd0;
-
+   // Search all ways for a valid matching tag.
     for (int w = 0; w < WAYS; w++) begin
       if (valid_array[req_index][w] && tag_array[req_index][w] == req_tag) begin
         hit = 1'b1;
         hit_way = w[1:0];
       end
     end
-
+  // Pick the first invalid way, if any, as the preferred miss target.
     for (int w = 0; w < WAYS; w++) begin
       if (!valid_array[req_index][w] && !invalid_found) begin
         invalid_found = 1'b1;
@@ -255,17 +255,20 @@ module cache_4way (
                              mem_rline;
   assign refill_read_word = get_word(mem_rline, req_offset);
   // CPU, Memory, and Debug Output Logic
+  // Outputs are derived from the current FSM state. req_ready is high only in
+  // IDLE, and resp_valid is high only when the cached transaction is complete.
   assign cpu_req_ready  = (state_q == ST_IDLE);
   assign cpu_resp_valid = (state_q == ST_RESP);
   assign cpu_rdata      = resp_rdata_q;
-
+  // Memory request is asserted only while issuing a write-back or refill.
   assign mem_req_valid = (state_q == ST_WRITEBACK_REQ) || (state_q == ST_REFILL_REQ);
   assign mem_req_write = (state_q == ST_WRITEBACK_REQ);
+    // Write-back uses the victim line address; refill uses the missed line address.
   assign mem_addr      = (state_q == ST_WRITEBACK_REQ) ?
                          {tag_array[req_index][victim_way_q], req_index, 5'b0} :
                          req_line_addr;
   assign mem_wline     = data_array[req_index][victim_way_q];
-
+  // Debug pulses allow the testbench to count whether important paths occurred.
   assign dbg_state       = state_q;
   assign dbg_hit         = (state_q == ST_LOOKUP) && hit;
   assign dbg_miss        = (state_q == ST_LOOKUP) && !hit;
@@ -365,6 +368,8 @@ module cache_4way (
         end
 
         ST_REFILL_WAIT: begin
+           // Install the returned memory line. For a write miss, the pending write
+          // has already been merged into refill_line_final.
           if (mem_resp_valid) begin
             data_array[req_index][victim_way_q]  <= refill_line_final;
             tag_array[req_index][victim_way_q]   <= req_tag;
